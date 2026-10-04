@@ -1,4 +1,12 @@
-const SUPABASE_URL = 'https://ncartouivsajjbpivuhs.supabase.co';
+const WRITE_URL = 'https://ncartouivsajjbpivuhs.supabase.co/functions/v1/stackable-chair-secure-write';
+
+async function edge(body) {
+  return fetch(WRITE_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+}
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
@@ -6,31 +14,24 @@ export default async function handler(req, res) {
 
   const adminPassword = process.env.ADMIN_PASSWORD;
   if (!adminPassword) return res.status(500).json({ error: 'Admin password is not configured' });
+
   const { action, password, rows } = req.body || {};
-  if (typeof password !== 'string' || password !== adminPassword) return res.status(401).json({ error: 'Incorrect password' });
-  if (action === 'login') return res.status(200).json({ ok: true });
-  if (action !== 'save' || !Array.isArray(rows)) return res.status(400).json({ error: 'Invalid request' });
-
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!serviceKey) return res.status(500).json({ error: 'Database write key is not configured' });
-
-  for (const row of rows) {
-    const required = Math.trunc(Number(row.required_qty));
-    const completed = Math.trunc(Number(row.completed_qty));
-    if (!row.item_key || !Number.isFinite(required) || !Number.isFinite(completed) || required < 0 || completed < 0) {
-      return res.status(400).json({ error: 'Invalid quantities' });
-    }
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/stackable_chair_status?item_key=eq.${encodeURIComponent(row.item_key)}`, {
-      method: 'PATCH',
-      headers: {
-        apikey: serviceKey,
-        Authorization: `Bearer ${serviceKey}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=minimal'
-      },
-      body: JSON.stringify({ required_qty: required, completed_qty: completed })
-    });
-    if (!r.ok) return res.status(500).json({ error: 'Could not save dashboard data' });
+  if (typeof password !== 'string' || password !== adminPassword) {
+    return res.status(401).json({ error: 'Incorrect password' });
   }
-  return res.status(200).json({ ok: true });
+
+  if (action === 'login') {
+    let r = await edge({ action: 'bootstrap', username: 'admin', password });
+    if (r.status === 409) r = await edge({ action: 'login', username: 'admin', password });
+    if (!r.ok) return res.status(401).json({ error: 'Incorrect password' });
+    return res.status(200).json({ ok: true });
+  }
+
+  if (action === 'save' && Array.isArray(rows)) {
+    const r = await edge({ action: 'save', username: 'admin', password, rows });
+    const data = await r.json().catch(() => ({}));
+    return res.status(r.ok ? 200 : r.status).json(r.ok ? { ok: true } : { error: data.error || 'Could not save dashboard data' });
+  }
+
+  return res.status(400).json({ error: 'Invalid request' });
 }
